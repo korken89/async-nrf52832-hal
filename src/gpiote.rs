@@ -1,6 +1,4 @@
-use crate::{
-    interrupt_token::InterruptToken, waker_registration::CriticalSectionWakerRegistration,
-};
+use crate::{waker_registration::CriticalSectionWakerRegistration, InterruptToken};
 use core::{
     future::Future,
     pin::Pin,
@@ -17,10 +15,8 @@ macro_rules! register_gpiote_interrupt {
     ($token_name:ident) => {
         pub struct $token_name;
 
-        unsafe impl
-            async_nrf52832_hal::interrupt_token::InterruptToken<
-                async_nrf52832_hal::gpiote::export::GPIOTE,
-            > for $token_name
+        unsafe impl async_nrf52832_hal::InterruptToken<async_nrf52832_hal::gpiote::export::GPIOTE>
+            for $token_name
         {
         }
 
@@ -50,10 +46,10 @@ pub mod export {
     }
 }
 
-const NW: CriticalSectionWakerRegistration = CriticalSectionWakerRegistration::new();
+const NEW_WAKER_REG: CriticalSectionWakerRegistration = CriticalSectionWakerRegistration::new();
 
 // Waker registration for each GPIOTE channel.
-static WAKER_REGISTRATION: [CriticalSectionWakerRegistration; 8] = [NW; 8];
+static WAKER_REGISTRATION: [CriticalSectionWakerRegistration; 8] = [NEW_WAKER_REG; 8];
 
 /// Uninit state for a gpiote channel
 pub struct Uninit;
@@ -112,10 +108,7 @@ impl<const CH: usize> Channel<CH, Uninit> {
     }
 }
 
-impl<const CH: usize, Pin> Channel<CH, Configured<Pin>>
-where
-    Pin: GpioteInputPin,
-{
+impl<const CH: usize, Pin> Channel<CH, Configured<Pin>> {
     /// Enable interrupts from this channel.
     fn enable_interrupt() {
         // SAFETY: Atomic write.
@@ -175,8 +168,8 @@ where
 
     /// Free the channel an pin.
     pub fn free(self) -> (Pin, Channel<CH, Uninit>) {
-        Self::reset_events();
         Self::disable_interrupt();
+        Self::reset_events();
 
         let gpiote = unsafe { &*GPIOTE::ptr() };
         gpiote.config[CH].write(|w| w);
@@ -215,26 +208,31 @@ where
     Pin: GpioteInputPin + InputPin,
     <Pin as InputPin>::Error: core::fmt::Debug,
 {
+    #[inline(always)]
     async fn wait_for_high(&mut self) -> Result<(), Self::Error> {
         self.wait_for(WaitingFor::High).await;
         Ok(())
     }
 
+    #[inline(always)]
     async fn wait_for_low(&mut self) -> Result<(), Self::Error> {
         self.wait_for(WaitingFor::Low).await;
         Ok(())
     }
 
+    #[inline(always)]
     async fn wait_for_rising_edge(&mut self) -> Result<(), Self::Error> {
         self.wait_for(WaitingFor::RisingEdge).await;
         Ok(())
     }
 
+    #[inline(always)]
     async fn wait_for_falling_edge(&mut self) -> Result<(), Self::Error> {
         self.wait_for(WaitingFor::FallingEdge).await;
         Ok(())
     }
 
+    #[inline(always)]
     async fn wait_for_any_edge(&mut self) -> Result<(), Self::Error> {
         self.wait_for(WaitingFor::AnyEdge).await;
         Ok(())
@@ -255,6 +253,13 @@ pub struct GpioteChannelFuture<'a, const CH: usize, Pin> {
     waiting_for: WaitingFor,
 }
 
+impl<'a, const CH: usize, P> Drop for GpioteChannelFuture<'a, CH, P> {
+    fn drop(&mut self) {
+        Channel::<CH, Configured<P>>::disable_interrupt();
+        Channel::<CH, Configured<P>>::reset_events();
+    }
+}
+
 impl<'a, const CH: usize, P> Future for GpioteChannelFuture<'a, CH, P>
 where
     P: GpioteInputPin + InputPin,
@@ -262,12 +267,19 @@ where
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        Channel::<CH, Configured<P>>::disable_interrupt();
+
+        let ready = || {
+            Channel::<CH, Configured<P>>::reset_events();
+
+            Poll::Ready(())
+        };
+
         match &self.waiting_for {
             WaitingFor::High => {
                 // Check fall through
                 if matches!(self.channel.conf.0.is_high(), Ok(true)) {
-                    Channel::<CH, Configured<P>>::disable_interrupt();
-                    return Poll::Ready(());
+                    return ready();
                 }
 
                 Channel::<CH, Configured<P>>::set_trigger(EventPolarity::LoToHi);
@@ -275,8 +287,7 @@ where
             WaitingFor::Low => {
                 // Check fall through
                 if matches!(self.channel.conf.0.is_low(), Ok(true)) {
-                    Channel::<CH, Configured<P>>::disable_interrupt();
-                    return Poll::Ready(());
+                    return ready();
                 }
 
                 Channel::<CH, Configured<P>>::set_trigger(EventPolarity::HiToLo);
@@ -295,10 +306,7 @@ where
         match &self.waiting_for {
             WaitingFor::RisingEdge | WaitingFor::FallingEdge | WaitingFor::AnyEdge => {
                 if Channel::<CH, Configured<P>>::is_event_triggered() {
-                    Channel::<CH, Configured<P>>::reset_events();
-                    Channel::<CH, Configured<P>>::disable_interrupt();
-
-                    return Poll::Ready(());
+                    return ready();
                 }
             }
             _ => {}

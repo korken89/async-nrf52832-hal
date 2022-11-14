@@ -9,7 +9,6 @@ pub use embedded_hal_async;
 
 pub mod gpio;
 pub mod gpiote;
-pub mod interrupt_token;
 pub mod spim;
 pub mod waker_registration;
 
@@ -30,6 +29,12 @@ impl DmaSlice {
         }
     }
 }
+
+/// This marker is implemented on an interupt token to enforce that the right tokens
+/// are given to the correct HAL peripheral.
+///
+/// This trait is implemented by the HAL, not intended for user implementation.
+pub unsafe trait InterruptToken<Periperhal> {}
 
 /// Does this slice reside entirely within RAM?
 pub(crate) fn slice_in_ram(slice: &[u8]) -> bool {
