@@ -6,7 +6,7 @@ edition = "2021"
 version = "0.1.0"
 
 [dependencies]
-cortex-m = { version = "0.7.6", features = ["critical-section-single-core"]}
+cortex-m = { version = "0.7.6", features = ["inline-asm", "critical-section-single-core"]}
 cortex-m-rtic = { git = "https://github.com/rtic-rs/cortex-m-rtic.git", branch = "async-2022" }
 rtic-monotonic = "1"
 systick-monotonic = "1.0.1"

@@ -111,7 +111,7 @@ mod app {
         defmt::info!("hello");
         loop {
             btn.wait_for_falling_edge().await.ok();
-            defmt::info!("Button pressed");
+            defmt::info!("Button pressed, reading DW1000 ID");
             led.set_low().ok();
 
             cs.set_low().ok();
@@ -122,6 +122,12 @@ mod app {
             cs.set_high().ok();
 
             defmt::info!("SPI data: {:x}", buf);
+
+            if buf[4] == 0xde && buf[3] == 0xca && buf[2] == 0x1 && buf[1] == 0x30 {
+                defmt::info!("    DW1000 detected!");
+            } else {
+                defmt::info!("    DW1000 not detected...");
+            }
 
             btn.wait_for_rising_edge().await.ok();
             defmt::info!("Button released");
