@@ -383,6 +383,10 @@ where
 
     /// Internal helper
     async fn async_do_spi_dma_transfer(&mut self, tx: DmaSlice, rx: DmaSlice) -> Result<(), Error> {
+        let dropper = crate::OnDrop::new(|| {
+            Self::stop();
+        });
+
         self.start_dma_transfer(&tx, &rx);
 
         core::future::poll_fn(|cx| {
@@ -395,6 +399,8 @@ where
             }
         })
         .await;
+
+        dropper.defuse();
 
         if self.0.txd.amount.read().bits() != tx.len {
             return Err(Error::Transmit);
@@ -440,12 +446,13 @@ where
     }
 
     // Stop the SPIM
-    fn stop(&mut self) {
-        self.0.tasks_stop.write(|w| unsafe { w.bits(1) });
+    fn stop() {
+        let spim = unsafe { &*T::ptr() };
+        spim.tasks_stop.write(|w| unsafe { w.bits(1) });
 
-        while self.0.events_stopped.read().bits() == 0 {}
+        while spim.events_stopped.read().bits() == 0 {}
 
-        self.0.events_stopped.write(|w| w);
+        spim.events_stopped.write(|w| w);
     }
 }
 
@@ -454,7 +461,7 @@ where
     T: Instance,
 {
     fn drop(&mut self) {
-        self.stop();
+        Self::stop();
     }
 }
 

@@ -1,7 +1,8 @@
-use crate::{waker_registration::CriticalSectionWakerRegistration, 
-    InterruptToken, 
-    gpio::{Pin, Input, Port, Floating, PullDown, PullUp}
-    
+use crate::pac::GPIOTE;
+use crate::{
+    gpio::{Floating, Input, Pin, Port, PullDown, PullUp},
+    waker_registration::CriticalSectionWakerRegistration,
+    InterruptToken,
 };
 use core::{
     future::Future,
@@ -9,7 +10,6 @@ use core::{
 };
 use cortex_m::peripheral::NVIC;
 use embedded_hal::digital::InputPin;
-use crate::pac::GPIOTE;
 
 #[macro_export]
 macro_rules! register_gpiote_interrupt {
@@ -139,7 +139,10 @@ impl<const CH: usize> Channel<CH, Uninit> {
     }
 }
 
-impl<const CH: usize, Pin> Channel<CH, Configured<Pin>> {
+impl<const CH: usize, Pin> Channel<CH, Configured<Pin>>
+where
+    Pin: InputPin,
+{
     /// Enable interrupts from this channel.
     fn enable_interrupt() {
         // SAFETY: Atomic write.
@@ -187,14 +190,66 @@ impl<const CH: usize, Pin> Channel<CH, Configured<Pin>> {
     }
 
     /// Main API for waiting on a pin.
-    pub fn wait_for(&mut self, waiting_for: WaitingFor) -> GpioteChannelFuture<CH, Pin> {
-        Self::disable_interrupt();
+    async fn wait_for(&mut self, waiting_for: WaitingFor) {
+        let dropper = crate::OnDrop::new(|| {
+            Self::disable_interrupt();
+            Self::reset_events();
+        });
+
         Self::reset_events();
 
-        GpioteChannelFuture {
-            channel: self,
-            waiting_for,
-        }
+        core::future::poll_fn(|cx| {
+            Self::disable_interrupt();
+
+            match waiting_for {
+                WaitingFor::RisingEdge | WaitingFor::FallingEdge | WaitingFor::AnyEdge => {
+                    if Self::is_event_triggered() {
+                        return Poll::Ready(());
+                    }
+                }
+                _ => {}
+            }
+
+            Self::reset_events();
+
+            match waiting_for {
+                WaitingFor::High => {
+                    // Check fall through
+                    if matches!(self.conf.0.is_high(), Ok(true)) {
+                        return Poll::Ready(());
+                    }
+
+                    Self::set_trigger(EventPolarity::LoToHi);
+                }
+                WaitingFor::Low => {
+                    // Check fall through
+                    if matches!(self.conf.0.is_low(), Ok(true)) {
+                        return Poll::Ready(());
+                    }
+
+                    Self::set_trigger(EventPolarity::HiToLo);
+                }
+                WaitingFor::RisingEdge => {
+                    Self::set_trigger(EventPolarity::LoToHi);
+                }
+                WaitingFor::FallingEdge => {
+                    Self::set_trigger(EventPolarity::HiToLo);
+                }
+                WaitingFor::AnyEdge => {
+                    Self::set_trigger(EventPolarity::Toggle);
+                }
+            }
+
+            WAKER_REGISTRATION[CH].register(cx.waker());
+
+            // Enable interrupts after registration
+            Self::enable_interrupt();
+
+            Poll::Pending
+        })
+        .await;
+
+        dropper.defuse();
     }
 
     /// Free the channel an pin.
@@ -229,7 +284,6 @@ where
     Pin: InputPin,
 {
     type Error = <Pin as embedded_hal::digital::ErrorType>::Error;
-
 }
 
 impl<const CH: usize, Pin> embedded_hal_async::digital::Wait for Channel<CH, Configured<Pin>>
@@ -274,77 +328,6 @@ pub enum WaitingFor {
     RisingEdge,
     FallingEdge,
     AnyEdge,
-}
-
-#[must_use]
-pub struct GpioteChannelFuture<'a, const CH: usize, Pin> {
-    channel: &'a mut Channel<CH, Configured<Pin>>,
-    waiting_for: WaitingFor,
-}
-
-impl<'a, const CH: usize, P> Drop for GpioteChannelFuture<'a, CH, P> {
-    fn drop(&mut self) {
-        Channel::<CH, Configured<P>>::disable_interrupt();
-        Channel::<CH, Configured<P>>::reset_events();
-    }
-}
-
-impl<'a, const CH: usize, P> Future for GpioteChannelFuture<'a, CH, P>
-where
-    P: GpioteInputPin + InputPin,
-{
-    type Output = ();
-
-    fn poll(self: core::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        Channel::<CH, Configured<P>>::disable_interrupt();
-
-        match &self.waiting_for {
-            WaitingFor::RisingEdge | WaitingFor::FallingEdge | WaitingFor::AnyEdge => {
-                if Channel::<CH, Configured<P>>::is_event_triggered() {
-                    return Poll::Ready(());
-                }
-            }
-            _ => {}
-        }
-
-        Channel::<CH, Configured<P>>::reset_events();
-
-        match &self.waiting_for {
-            WaitingFor::High => {
-                // Check fall through
-                if matches!(self.channel.conf.0.is_high(), Ok(true)) {
-                    return Poll::Ready(());
-                }
-
-                Channel::<CH, Configured<P>>::set_trigger(EventPolarity::LoToHi);
-            }
-            WaitingFor::Low => {
-                // Check fall through
-                if matches!(self.channel.conf.0.is_low(), Ok(true)) {
-                    return Poll::Ready(());
-                }
-
-                Channel::<CH, Configured<P>>::set_trigger(EventPolarity::HiToLo);
-            }
-            WaitingFor::RisingEdge => {
-                Channel::<CH, Configured<P>>::set_trigger(EventPolarity::LoToHi);
-            }
-            WaitingFor::FallingEdge => {
-                Channel::<CH, Configured<P>>::set_trigger(EventPolarity::HiToLo);
-            }
-            WaitingFor::AnyEdge => {
-                Channel::<CH, Configured<P>>::set_trigger(EventPolarity::Toggle);
-            }
-        }
-
-
-        WAKER_REGISTRATION[CH].register(cx.waker());
-
-        // Enable interrupts after registration
-        Channel::<CH, Configured<P>>::enable_interrupt();
-
-        Poll::Pending
-    }
 }
 
 pub enum EventPolarity {

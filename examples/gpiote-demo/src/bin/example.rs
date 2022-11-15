@@ -16,11 +16,10 @@ defmt::timestamp!("{=u64:us}", {
 mod app {
     use demo_app::hal::{
         clocks,
-        embedded_hal::digital::{InputPin, OutputPin},
         embedded_hal_async::digital::Wait,
         gpio::{
             self,
-            p0::{self, P0_02, P0_31},
+            p0::{self, P0_31},
             Input, Output, Pin, PullUp, PushPull,
         },
         gpiote, register_gpiote_interrupt,
@@ -69,9 +68,10 @@ mod app {
     async fn async_task(cx: async_task::Context) {
         defmt::info!("hello");
         loop {
-            cx.local.btn.wait_for_low().await.ok();
+            cx.local.btn.wait_for_falling_edge().await.ok();
             defmt::info!("Button pressed");
-            monotonics::delay(50.millis()).await;
+            cx.local.btn.wait_for_rising_edge().await.ok();
+            defmt::info!("Button released");
         }
     }
 }
