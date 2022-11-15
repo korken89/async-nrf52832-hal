@@ -313,6 +313,8 @@ where
             // there.
             unsafe { w.orc().bits(orc) });
 
+        T::unmask_interrupt();
+
         Spim(spim)
     }
 
@@ -540,6 +542,8 @@ pub trait Instance: Deref<Target = spim0::RegisterBlock> + sealed::Sealed {
     fn ptr() -> *const spim0::RegisterBlock;
 
     fn register_waker(waker: &Waker);
+
+    fn unmask_interrupt();
 }
 
 mod sealed {
@@ -555,6 +559,14 @@ impl Instance for SPIM0 {
     fn register_waker(waker: &Waker) {
         SPIM0_WAKER.register(waker);
     }
+
+    fn unmask_interrupt() {
+        unsafe {
+            cortex_m::peripheral::NVIC::unmask(
+                crate::pac::Interrupt::SPIM0_SPIS0_TWIM0_TWIS0_SPI0_TWI0,
+            )
+        };
+    }
 }
 
 impl Instance for SPIM1 {
@@ -564,6 +576,14 @@ impl Instance for SPIM1 {
 
     fn register_waker(waker: &Waker) {
         SPIM1_WAKER.register(waker);
+    }
+
+    fn unmask_interrupt() {
+        unsafe {
+            cortex_m::peripheral::NVIC::unmask(
+                crate::pac::Interrupt::SPIM1_SPIS1_TWIM1_TWIS1_SPI1_TWI1,
+            )
+        };
     }
 }
 impl sealed::Sealed for SPIM1 {}
@@ -575,6 +595,10 @@ impl Instance for SPIM2 {
 
     fn register_waker(waker: &Waker) {
         SPIM2_WAKER.register(waker);
+    }
+
+    fn unmask_interrupt() {
+        unsafe { cortex_m::peripheral::NVIC::unmask(crate::pac::Interrupt::SPIM2_SPIS2_SPI2) };
     }
 }
 impl sealed::Sealed for SPIM2 {}
