@@ -1,14 +1,15 @@
-use crate::{waker_registration::CriticalSectionWakerRegistration, InterruptToken};
+use crate::{waker_registration::CriticalSectionWakerRegistration, 
+    InterruptToken, 
+    gpio::{Pin, Input, Port, Floating, PullDown, PullUp}
+    
+};
 use core::{
     future::Future,
-    pin::Pin,
     task::{Context, Poll},
 };
-use nrf52832_hal::{
-    gpiote::{EventPolarity, Gpiote, GpioteInputPin},
-    pac::GPIOTE,
-    prelude::InputPin,
-};
+use cortex_m::peripheral::NVIC;
+use embedded_hal::digital::InputPin;
+use crate::pac::GPIOTE;
 
 #[macro_export]
 macro_rules! register_gpiote_interrupt {
@@ -57,9 +58,31 @@ pub struct Uninit;
 /// Configured state for a gpiote channel with a pin
 pub struct Configured<Pin>(Pin);
 
+/// Convert the Gpiote to its channels and set the priority of the GPIOTE interrupt.
+#[inline(always)]
+pub fn new_with_priority(
+    gpiote: GPIOTE,
+    interrupt_token: impl InterruptToken<GPIOTE>,
+    nvic: &mut NVIC,
+    prio: u8,
+) -> (
+    Channel<0, Uninit>,
+    Channel<1, Uninit>,
+    Channel<2, Uninit>,
+    Channel<3, Uninit>,
+    Channel<4, Uninit>,
+    Channel<5, Uninit>,
+    Channel<6, Uninit>,
+    Channel<7, Uninit>,
+) {
+    unsafe { nvic.set_priority(crate::pac::Interrupt::GPIOTE, prio) };
+
+    new(gpiote, interrupt_token)
+}
+
 /// Convert the Gpiote to its channels
-pub fn new<IntReg>(
-    _gpiote: Gpiote,
+pub fn new(
+    gpiote: GPIOTE,
     _interrupt_token: impl InterruptToken<GPIOTE>,
 ) -> (
     Channel<0, Uninit>,
@@ -71,6 +94,14 @@ pub fn new<IntReg>(
     Channel<6, Uninit>,
     Channel<7, Uninit>,
 ) {
+    // Clear any old pending interrupts
+    gpiote.intenclr.write(|w| unsafe { w.bits(0xff) });
+    for ch in 0..8 {
+        gpiote.events_in[ch].write(|w| w);
+    }
+
+    unsafe { NVIC::unmask(crate::pac::Interrupt::GPIOTE) };
+
     (
         Channel { conf: Uninit },
         Channel { conf: Uninit },
@@ -156,7 +187,7 @@ impl<const CH: usize, Pin> Channel<CH, Configured<Pin>> {
     }
 
     /// Main API for waiting on a pin.
-    pub async fn wait_for(&mut self, waiting_for: WaitingFor) -> GpioteChannelFuture<CH, Pin> {
+    pub fn wait_for(&mut self, waiting_for: WaitingFor) -> GpioteChannelFuture<CH, Pin> {
         Self::disable_interrupt();
         Self::reset_events();
 
@@ -183,8 +214,6 @@ impl<const CH: usize, Pin> InputPin for Channel<CH, Configured<Pin>>
 where
     Pin: InputPin,
 {
-    type Error = <Pin as InputPin>::Error;
-
     fn is_low(&self) -> Result<bool, Self::Error> {
         self.conf.0.is_low()
     }
@@ -198,15 +227,14 @@ where
 impl<const CH: usize, Pin> embedded_hal::digital::ErrorType for Channel<CH, Configured<Pin>>
 where
     Pin: InputPin,
-    <Pin as InputPin>::Error: core::fmt::Debug,
 {
-    type Error = <Pin as InputPin>::Error;
+    type Error = <Pin as embedded_hal::digital::ErrorType>::Error;
+
 }
 
 impl<const CH: usize, Pin> embedded_hal_async::digital::Wait for Channel<CH, Configured<Pin>>
 where
     Pin: GpioteInputPin + InputPin,
-    <Pin as InputPin>::Error: core::fmt::Debug,
 {
     #[inline(always)]
     async fn wait_for_high(&mut self) -> Result<(), Self::Error> {
@@ -248,6 +276,7 @@ pub enum WaitingFor {
     AnyEdge,
 }
 
+#[must_use]
 pub struct GpioteChannelFuture<'a, const CH: usize, Pin> {
     channel: &'a mut Channel<CH, Configured<Pin>>,
     waiting_for: WaitingFor,
@@ -266,20 +295,25 @@ where
 {
     type Output = ();
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: core::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         Channel::<CH, Configured<P>>::disable_interrupt();
 
-        let ready = || {
-            Channel::<CH, Configured<P>>::reset_events();
+        match &self.waiting_for {
+            WaitingFor::RisingEdge | WaitingFor::FallingEdge | WaitingFor::AnyEdge => {
+                if Channel::<CH, Configured<P>>::is_event_triggered() {
+                    return Poll::Ready(());
+                }
+            }
+            _ => {}
+        }
 
-            Poll::Ready(())
-        };
+        Channel::<CH, Configured<P>>::reset_events();
 
         match &self.waiting_for {
             WaitingFor::High => {
                 // Check fall through
                 if matches!(self.channel.conf.0.is_high(), Ok(true)) {
-                    return ready();
+                    return Poll::Ready(());
                 }
 
                 Channel::<CH, Configured<P>>::set_trigger(EventPolarity::LoToHi);
@@ -287,7 +321,7 @@ where
             WaitingFor::Low => {
                 // Check fall through
                 if matches!(self.channel.conf.0.is_low(), Ok(true)) {
-                    return ready();
+                    return Poll::Ready(());
                 }
 
                 Channel::<CH, Configured<P>>::set_trigger(EventPolarity::HiToLo);
@@ -303,14 +337,6 @@ where
             }
         }
 
-        match &self.waiting_for {
-            WaitingFor::RisingEdge | WaitingFor::FallingEdge | WaitingFor::AnyEdge => {
-                if Channel::<CH, Configured<P>>::is_event_triggered() {
-                    return ready();
-                }
-            }
-            _ => {}
-        }
 
         WAKER_REGISTRATION[CH].register(cx.waker());
 
@@ -318,5 +344,45 @@ where
         Channel::<CH, Configured<P>>::enable_interrupt();
 
         Poll::Pending
+    }
+}
+
+pub enum EventPolarity {
+    None,
+    HiToLo,
+    LoToHi,
+    Toggle,
+}
+
+/// Trait to represent event input pin.
+pub trait GpioteInputPin {
+    fn pin(&self) -> u8;
+    fn port(&self) -> Port;
+}
+
+impl GpioteInputPin for Pin<Input<PullUp>> {
+    fn pin(&self) -> u8 {
+        self.pin()
+    }
+    fn port(&self) -> Port {
+        self.port()
+    }
+}
+
+impl GpioteInputPin for Pin<Input<PullDown>> {
+    fn pin(&self) -> u8 {
+        self.pin()
+    }
+    fn port(&self) -> Port {
+        self.port()
+    }
+}
+
+impl GpioteInputPin for Pin<Input<Floating>> {
+    fn pin(&self) -> u8 {
+        self.pin()
+    }
+    fn port(&self) -> Port {
+        self.port()
     }
 }

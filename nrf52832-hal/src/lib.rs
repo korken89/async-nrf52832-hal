@@ -7,6 +7,7 @@ pub use nrf52832_hal::pac;
 pub use embedded_hal;
 pub use embedded_hal_async;
 
+pub mod clocks;
 pub mod gpio;
 pub mod gpiote;
 pub mod spim;
