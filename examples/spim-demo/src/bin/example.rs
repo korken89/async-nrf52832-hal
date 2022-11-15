@@ -16,12 +16,12 @@ defmt::timestamp!("{=u64:us}", {
 mod app {
     use demo_app::hal::{
         clocks,
-        embedded_hal::digital::{InputPin, OutputPin},
+        embedded_hal::digital::OutputPin,
         embedded_hal_async::{digital::Wait, spi::SpiBus},
         gpio::{
             self,
-            p0::{self, P0_16, P0_17, P0_18, P0_19, P0_20, P0_24, P0_31},
-            Floating, Input, OpenDrainConfig, OpenDrainIO, Output, Pin, PullUp, PushPull,
+            p0::{self, P0_17, P0_31},
+            Input, OpenDrainConfig, Output, Pin, PullUp, PushPull,
         },
         gpiote,
         pac::SPIM0,
@@ -34,12 +34,7 @@ mod app {
     type LedPin = P0_31<Output<PushPull>>;
     type IrqButton = gpiote::Channel<0, gpiote::Configured<ButtonPin>>;
 
-    type DW1000Clk = P0_16<Output<PushPull>>;
-    type DW1000Mosi = P0_20<Output<PushPull>>;
-    type DW1000Miso = P0_18<Output<PushPull>>;
     type DW1000Cs = P0_17<Output<PushPull>>;
-    type DW1000Irq = P0_19<Input<Floating>>;
-    type DW1000Rst = P0_24<Output<OpenDrainIO>>;
 
     #[monotonic(binds = SysTick, default = true)]
     type Mono = Systick<1_000>;
@@ -55,6 +50,7 @@ mod app {
         spi: Spim<SPIM0>,
     }
 
+    // Interrupt registration
     register_gpiote_interrupt!(GpioteToken);
     register_spim0_interrupt!(Spim0Token);
 
@@ -65,20 +61,19 @@ mod app {
         let _clock = clocks::Clocks::new(cx.device.CLOCK).enable_ext_hfosc();
         let port0 = p0::Parts::new(cx.device.P0);
 
+        // Setup button IRQ
         let btn = port0.p0_02.into_pullup_input();
-        let led = port0.p0_31.into_push_pull_output(gpio::Level::High);
-
-        let (ch0, ..) = gpiote::new(cx.device.GPIOTE, GpioteToken);
+        let (ch0, ..) = gpiote::new(
+            cx.device.GPIOTE,
+            GpioteToken, // Interrupt token goes here
+        );
         let btn = ch0.configure(btn.degrade());
 
+        // Setup SPI
         let spiclk = port0.p0_16.into_push_pull_output(gpio::Level::Low);
         let spimosi = port0.p0_20.into_push_pull_output(gpio::Level::Low);
         let spimiso = port0.p0_18.into_floating_input();
         let cs = port0.p0_17.into_push_pull_output(gpio::Level::High);
-        let _irq = port0.p0_19.into_floating_input();
-        let _rst = port0
-            .p0_24
-            .into_open_drain_input_output(OpenDrainConfig::Standard0Disconnect1, gpio::Level::High);
 
         let spi = Spim::new(
             cx.device.SPIM0,
@@ -90,10 +85,12 @@ mod app {
             Frequency::M1,
             MODE_0,
             0,
-            Spim0Token,
+            Spim0Token, // Interrupt token goes here
         );
 
+        // Misc setup
         let mono = Systick::new(cx.core.SYST, 64_000_000);
+        let led = port0.p0_31.into_push_pull_output(gpio::Level::High);
 
         async_task::spawn().ok();
 
@@ -108,17 +105,17 @@ mod app {
     async fn async_task(cx: async_task::Context) {
         let async_task::LocalResources { led, btn, cs, spi } = cx.local;
 
-        defmt::info!("hello");
         loop {
-            btn.wait_for_falling_edge().await.ok();
+            // Read the DW1000s ID on button press
+            btn.wait_for_low().await.ok();
             defmt::info!("Button pressed, reading DW1000 ID");
+
             led.set_low().ok();
 
-            cs.set_low().ok();
-
+            // Read ID (reg 0, 4 bytes to read)
             let mut buf = [0; 5];
+            cs.set_low().ok();
             spi.transfer_in_place(&mut buf).await.unwrap();
-
             cs.set_high().ok();
 
             defmt::info!("SPI data: {:x}", buf);
@@ -129,8 +126,10 @@ mod app {
                 defmt::info!("    DW1000 not detected...");
             }
 
-            btn.wait_for_rising_edge().await.ok();
+            // Wait for button release
+            btn.wait_for_high().await.ok();
             defmt::info!("Button released");
+
             led.set_high().ok();
         }
     }
