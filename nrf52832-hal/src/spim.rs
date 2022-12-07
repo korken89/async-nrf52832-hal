@@ -3,16 +3,14 @@
 //! See product specification, chapter 31.
 
 use crate::gpio::{Floating, Input, Output, Pin, PushPull};
+use crate::target_constants::EASY_DMA_SIZE;
 use crate::waker_registration::CriticalSectionWakerRegistration;
-use crate::{slice_in_ram, slice_in_ram_or, DmaSlice, InterruptToken};
+use crate::{slice_in_ram_or, DmaSlice, InterruptToken};
 use core::ops::Deref;
 use core::sync::atomic::{compiler_fence, Ordering};
 use core::task::{Poll, Waker};
 pub use embedded_hal::spi::{Mode, Phase, Polarity, MODE_0, MODE_1, MODE_2, MODE_3};
-use nrf52832_hal::{
-    pac::{spim0, SPIM0, SPIM1, SPIM2},
-    target_constants::EASY_DMA_SIZE,
-};
+use nrf52832_pac::{spim0, SPIM0, SPIM1, SPIM2};
 pub use spim0::frequency::FREQUENCY_A as Frequency;
 
 /// SPIM events
@@ -86,7 +84,7 @@ static SPIM2_WAKER: CriticalSectionWakerRegistration = CriticalSectionWakerRegis
 // Hidden export only for use by the macro
 #[doc(hidden)]
 pub mod export {
-    pub use nrf52832_hal::pac::{SPIM0, SPIM1, SPIM2};
+    pub use nrf52832_pac::{SPIM0, SPIM1, SPIM2};
 
     /// On interrupt.
     pub fn on_interrupt_spim0() {

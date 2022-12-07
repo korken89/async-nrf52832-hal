@@ -4,10 +4,7 @@ use crate::{
     waker_registration::CriticalSectionWakerRegistration,
     InterruptToken,
 };
-use core::{
-    future::Future,
-    task::{Context, Poll},
-};
+use core::task::Poll;
 use cortex_m::peripheral::NVIC;
 use embedded_hal::digital::InputPin;
 
@@ -32,7 +29,7 @@ macro_rules! register_gpiote_interrupt {
 // Hidden export only for use by the macro
 #[doc(hidden)]
 pub mod export {
-    pub use nrf52832_hal::pac::GPIOTE;
+    pub use nrf52832_pac::GPIOTE;
 
     /// This happens on interrupt.
     pub fn on_interrupt_gpiote() {
