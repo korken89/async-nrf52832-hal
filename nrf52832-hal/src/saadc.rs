@@ -37,6 +37,7 @@ use core::{
     task::Poll,
 };
 
+use nrf52832_pac::NVIC;
 pub use saadc::{
     ch::config::{GAIN_A as Gain, REFSEL_A as Reference, RESP_A as Resistor, TACQ_A as Time},
     oversample::OVERSAMPLE_A as Oversample,
@@ -50,7 +51,7 @@ macro_rules! register_saadc_interrupt {
     ($token_name:ident) => {
         pub struct $token_name;
 
-        unsafe impl async_nrf52832_hal::InterruptToken<async_nrf52832_hal::gpiote::export::SAADC>
+        unsafe impl async_nrf52832_hal::InterruptToken<async_nrf52832_hal::saadc::export::SAADC>
             for $token_name
         {
         }
@@ -71,15 +72,18 @@ pub mod export {
     /// This happens on interrupt.
     pub fn on_interrupt_saadc() {
         let saadc = unsafe { &*SAADC::ptr() };
+            
 
         // Calibration done event
         if saadc.events_calibratedone.read().bits() != 0 {
-            saadc.intenclr.write(|w| w.calibratedone().clear())
+            saadc.intenclr.write(|w| w.calibratedone().set_bit());
+        
         }
 
-        // Read done
-        if saadc.events_done.read().bits() != 0 {
-            saadc.intenclr.write(|w| w.done().clear())
+        // Read end
+        if saadc.events_end.read().bits() != 0 {
+            saadc.intenclr.write(|w| w.end().set_bit());
+        
         }
 
         super::WAKER_REGISTRATION.wake();
@@ -122,7 +126,6 @@ impl Saadc {
             .oversample
             .write(|w| w.oversample().variant(oversample));
         saadc.samplerate.write(|w| w.mode().task());
-
         saadc.ch[0].config.write(|w| {
             w.refsel().variant(reference);
             w.gain().variant(gain);
@@ -135,6 +138,8 @@ impl Saadc {
         });
         saadc.ch[0].pseln.write(|w| w.pseln().nc());
 
+        saadc.intenclr.write(|w| unsafe { w.bits(0xffffffff) });
+        unsafe { NVIC::unmask(crate::pac::Interrupt::SAADC) };
         saadc.enable.write(|w| w.enable().disabled());
 
         Saadc(saadc)
@@ -145,15 +150,12 @@ impl Saadc {
         self.0.enable.write(|w| w.enable().disabled());
         self.0
     }
-
-    /// Read an ADC pin
-    pub async fn read<PIN, const CHANNEL: u8>(&mut self, _pin: &mut PIN) -> i16
-    where
-        PIN: Channel<SAADC, CHANNEL>,
-    {
+    
+    /// Calibrate the ADC, the datasheet says this should be run every now and again
+    pub async fn calibrate(&mut self) {
+        
         self.0.enable.write(|w| w.enable().enabled());
 
-        // 1. Calibrate offset
         self.0.events_calibratedone.reset();
         self.0.intenset.write(|w| w.calibratedone().set());
 
@@ -172,6 +174,21 @@ impl Saadc {
             Poll::Pending
         })
         .await;
+
+        // To fix errata
+        self.0.tasks_stop.write(|w| unsafe { w.bits(1) });
+        while self.0.events_stopped.read().bits() == 0 {}
+        self.0.events_stopped.reset();
+
+        self.0.enable.write(|w| w.enable().disabled());
+    }
+
+    /// Read an ADC pin
+    pub async fn read<PIN, const CHANNEL: u8>(&mut self, _pin: &mut PIN) -> i16
+    where
+        PIN: Channel<Saadc, CHANNEL>,
+    {
+        self.0.enable.write(|w| w.enable().enabled());
 
         // 2. Read pin
         match PIN::CHANNEL {
@@ -200,6 +217,7 @@ impl Saadc {
             .maxcnt
             .write(|w| unsafe { w.maxcnt().bits(1) });
 
+
         // Enable interrupt for end
         self.0.events_end.reset();
         self.0.intenset.write(|w| w.end().set());
@@ -213,6 +231,7 @@ impl Saadc {
 
         core::future::poll_fn(|cx| {
             WAKER_REGISTRATION.register(cx.waker());
+        
 
             if self.0.events_end.read().bits() != 0 {
                 self.0.events_end.reset();
