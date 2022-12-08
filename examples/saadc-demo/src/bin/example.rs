@@ -6,30 +6,30 @@
 use demo_app as _; // global logger + panicking-behavior + memory layout
 
 defmt::timestamp!("{=u64:us}", {
-    let time_us: systick_monotonic::fugit::MicrosDurationU64 =
+    let time_us: demo_app::hal::monotonic::fugit::MicrosDurationU32 =
         app::monotonics::now().duration_since_epoch().convert();
 
-    time_us.ticks()
+    time_us.ticks().into()
 });
 
 #[rtic::app(device = demo_app::hal::pac, dispatchers = [SWI0_EGU0])]
 mod app {
-    use async_nrf52832_hal::gpio::Floating;
+    use async_nrf52832_hal::{gpio::Floating, pac::TIMER0};
     use demo_app::hal::{
         clocks,
         gpio::{
             p0::{self, P0_04},
             Input,
         },
-        pac, register_saadc_interrupt,
+        monotonic::*,
+        register_saadc_interrupt,
         saadc::*,
     };
-    use systick_monotonic::*;
 
     type AdcPin = P0_04<Input<Floating>>;
 
-    #[monotonic(binds = SysTick, default = true)]
-    type Mono = Systick<1_000>;
+    #[monotonic(binds = TIMER0, default = true)]
+    type Mono = MonoTimer<TIMER0>;
 
     #[shared]
     struct Shared {}
@@ -53,6 +53,8 @@ mod app {
             .p0_05
             .into_push_pull_output(async_nrf52832_hal::gpio::Level::High);
 
+        cx.device.POWER.tasks_lowpwr.write(|w| unsafe { w.bits(1) });
+
         let pin = port0.p0_04.into_floating_input();
         let adc = Saadc::new(
             cx.device.SAADC,
@@ -64,11 +66,11 @@ mod app {
             SaadcToken,
         );
 
-        let mono = Systick::new(cx.core.SYST, 64_000_000);
+        let mono = MonoTimer::new(cx.device.TIMER0);
 
         async_task::spawn().ok();
 
-        (Shared {}, Local { adc, pin }, init::Monotonics(mono))
+        (Shared {}, Local { pin, adc }, init::Monotonics(mono))
     }
 
     #[task(local = [adc, pin])]
@@ -77,8 +79,6 @@ mod app {
         let pin = cx.local.pin;
 
         defmt::info!("hello");
-
-        // cortex_m::peripheral::NVIC::pend(pac::interrupt::SAADC);
 
         loop {
             adc.calibrate().await;
