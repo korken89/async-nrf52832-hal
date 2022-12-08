@@ -16,7 +16,9 @@ embedded-hal-async = "0.2.0-alpha.0"
 embedded-hal = "=1.0.0-alpha.9"
 embedded-dma = "0.2.0"
 defmt = "0.3"
-futures = { version = "0.3", default-features = false, features = [ "async-await" ] }
+# futures = { version = "0.3", default-features = false, features = [ "async-await" ] }
+fugit = "0.3"
+rtic-monotonic = "1"
 
 [dependencies.void]
 default-features = false

@@ -11,6 +11,7 @@ pub use embedded_hal_async;
 pub mod clocks;
 pub mod gpio;
 pub mod gpiote;
+pub mod monotonic;
 pub mod saadc;
 pub mod spim;
 pub mod waker_registration;
